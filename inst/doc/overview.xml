@@ -1,0 +1,649 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+
+<article  xmlns:s="http://cm.bell-labs.com/stat/S4"
+          xmlns:c="http://www.C.org"
+	  xmlns:html="http://www.w3.org/HTML4"
+	  xmlns:curl="http://curl.haxx.se"
+	  xmlns:sql="http://www.sql.org"
+>
+
+<articleinfo>
+<author>
+<firstname>Duncan</firstname>
+<surname>Temple Lang</surname>
+<affiliation>
+<orgname>Department of Statistics, UC Davis</orgname>
+</affiliation>
+<title>The <ulink url="http://www.omegahat.org/S4DBMSInterface">S4DBMSInterface package</ulink></title>
+</author>
+<keywordset>
+<keyword>S4 classes</keyword>
+<keyword>Relational Database</keyword>
+<keyword>R</keyword>
+</keywordset>
+</articleinfo>
+
+<section>
+<title>Overview</title> 
+
+While many of us use R for much of
+our data analysis, visualization and simualation
+tasks, we also use many other tools
+to access and process the data and to present results
+to different audiences.  This heterogeneity of languages
+and applications - or, generally, computing environments - 
+is a fact of life, and one that most of us deal with 
+on a regular basis.  The shift between languages
+and various syntaxes changes our thought patterns.
+Simple syntax errors are common,
+and more serious problems of thinking about different
+computation models are alos an issue.
+
+<para/>
+Inter-system interfaces or language bridges allow a programmer in one
+language to directly access functionality in another enviroment.
+Such interfaces reduce or remove the need to think about syntactic
+issues of other systems, and can present a computational model
+of the foreign system that is similar to that of the user's local 
+environment.  There are a variety of inter-system
+interfaces between R and other systems, e.g. Perl, Python,
+Java, etc.
+
+<para/>
+In this article, we discuss a different style of inter-system
+interface to R which connects the R language with databases.
+There exists various packages that allow R to send SQL commands
+to a database and retrieve results.  RMySQL, ROracle and
+RPgSQL are just three such packages.
+These provide a form of inter-system interfaces to the different 
+relational database servers. Specifically,
+the provide a communication channel to send SQL commands from R
+to the server and to get the results as values in R.
+Unfortunately, the programing model is not seamless
+or transparent. The  R user must compose the
+appropriate  SQL command.  This is composed as
+a string in R, and may potentially involve variables
+that are in R and in the database server.
+For example, to get all records whose value of X is
+greater than the previoulsy computed median, stored in 
+the R variable m, we would construct the command
+<programlisting>
+ paste('SELECT * FROM table WHERE X > ', m)
+</programlisting>
+We have to explicitly combine values into a string,
+worry about their formatting (precision, supplying and escaping quotes
+for strings, etc.).  This is a mental shift that  focuses more
+on the "how we do it", rather than the "what are we doing"
+and emphasis tedious details rather than concepts.
+
+<para/>
+A more S-like interface would be to treat the database table
+as a data frame in S.
+Then, we to access the first and second variables or columns,
+we would like to use the S syntax
+<code>myTable[, c(1, 2)]</code>.
+To access the rows or records whose value of
+X is greater than the average of that variable,
+we would like to use 
+<code>myTable[X > mean(X), ]</code>.
+And we would also like to be able to refer to the
+variables by name, e.g.
+<code>myTable[, c("X", "Y")]</code>
+
+<para/>
+While the syntactic simplicity described above
+would be nice, we do not want it to come at the
+expense of goss inefficiences. 
+Instead, we want to use the database for what
+it is good at - efficient management of data and
+processing of queries.
+The suggested command
+<code>myTable[X > mean(X), ]</code>
+above should not copy the entire
+table to R and then compute the median
+and then identify the rows 
+satisfying the condition.
+Instead, this should, when possible, send the
+appropriate query to the database in SQL and
+compute the restriction/subset there.
+In other words, the implementation of this
+command should expand to 
+<s:code>
+ dbGetQuery("SELECT * FROM theTable WHERE X > AVERAGE(X)")
+</s:code>
+
+<note>The median, etc. is harder to do as we have to bring
+the data to R and compute the value and then do a second query.</note>
+
+<para/>
+In the remainder of this article, we describe a very simple
+and incomplete exploration of how we can implement
+this S-like syntax to access relational database tables
+as if they were S data frames.
+This is currently a very experimental and minimal package.
+It is used more as an example or prototype rather than 
+intended to be a robust, day-to-day package.
+That might change over time, of course, depending on
+how much interest there is. 
+
+</section>
+
+<section>
+<title>The interface</title>
+
+The idea of the package is quite simple. It provides
+an interface or layer on top of the database connections
+in an attempt to make tables in relational databases
+appear to the S user like data.frame objects.
+We define methods for the usual 
+functions that are used with data.frame objects:
+<itemizedlist>
+<listitem>dim, nrow, ncol</listitem>
+<listitem>names, dimnames, colnames</listitem>
+<listitem>Subsetting (the <s:op>[</s:op> operator)</listitem>
+</itemizedlist>
+
+
+The implementation of the methods
+for <s:func>dim</s:func>,
+<s:func>nrow</s:func> and 
+<s:func>ncol</s:func> are 
+quite simple and use the appropriate 
+SQL command.
+For example,  we compute the number of records/rows
+in the table using the SQL function <sql:func>COUNT</sql:func>
+as follows
+<s:code>
+setMethod("nrow", "RDBMSTable", 
+          function(x) {
+            dbGetQuery(x@dbConnection, 
+               paste("SELECT COUNT(*) FROM ", x@table))[1,1]             
+          })
+</s:code>
+The number of columns in the table is
+determined by fetching the meta data into
+R and computing it from that:
+<s:code>
+setMethod("ncol", "RDBMSTable", 
+             function(x) {
+               nrow(dbGetQuery(x@dbConnection, paste("DESCRIBE", x@table)))
+          })
+</s:code>
+
+<para/>
+Similarly, the column/variable names are computed
+from the meta-data of the relational table.
+The rownames does not really make sense in the relational
+model unless somehow we have identified in R a variable
+that is used as row names.  We'll discuss this
+as an extension to the basic RDBMS table class in R.
+
+<para/>
+
+
+The most interesting method  is a mechanism
+for handling subsetting of the remote table
+from within S.
+Those familiar with S will know that
+the subsetting mechanism is both very general
+and very powerful and is a vital component of
+what makes S useful.
+There are 6 aspects of subsetting.
+These are
+<itemizedlist>
+
+<listitem>
+Subsetting rows and/or columns index, i.e. integer values
+</listitem>
+
+<listitem>
+Subsetting rows and/or columns by name, i.e. strings.
+For databases, we are primarily dealing with variables
+as records do not necessarily have an associated name/identifier.
+</listitem>
+
+<listitem>
+Subsetting rows and/or columns by logical value indicating 
+by <s:TRUE/> whether the corresponding element should be 
+included in the subset or <s:FALSE/>  if not.
+</listitem>
+
+<listitem>
+Subsetting by exclusion using  negative indices.
+</listitem>
+
+<listitem>
+Subsetting by omitting identifies, e.g. <code>x[1:10, ]</code>
+or <code>x[]</code>.
+</listitem>
+
+<listitem>
+Assigning to subsets using <s:op><![CDATA[<-]]></s:op>
+and all of the 5 rules above.
+</listitem>
+
+</itemizedlist>
+
+
+<section>
+<title>Subsetting Variables</title>
+Extracting columns or attributes of the relational
+table by name is quite easy to arrange.
+In S, we use a syntax such as 
+<s:code>tbl[, c("Var1",  "Var3")]</s:code>.
+By defining a method that takes character
+vectors for the column index, we can implement
+this using SQL commands in an obvious manner.
+The following is a simple version that ignores the
+record index, but illustrates the basic approach.
+<s:code>
+function(x, i, j, ..., drop = TRUE) {
+      dbGetQuery(x@dbConnection, paste("SELECT", paste(j, collapse = ", "), "FROM", x@table))
+}
+</s:code>
+The idea is merely to explicitly list the variables of interest in the
+SQL command and perform the relevant projection.
+
+<para/>
+We can extend this to handle indexing variables by position or number.
+Again, we use the meta-data from the schema of the table and map
+the numbers into actual names. With the integers converted
+to character strings, we can use the method above.
+In order to get the column names, we can use
+<s:func>colnames</s:func> or <s:func>names</s:func>.
+<s:code>
+function(x, i, j, ..., drop = TRUE)
+{ 
+   if(is.numeric(j)) {
+     j = names(x)[j]
+
+    if(length(j) == 0)
+       return(NULL)
+   }
+
+  dbGetQuery(x@dbConnection, paste("SELECT", paste(as.character(j), collapse = ", "), "FROM", x@table))
+}
+</s:code>
+
+<para/>
+We should note that this code also deals with subsetting by exclusion.
+The use of the subset operator on the character vector
+returned by <s:code>names(x)</s:code> means that we inherit this
+property as we exclude the values we don't want in the names vector
+and then use the remaining names.
+We have to add the check that ensures that we have not eliminated
+all the variables. This motivates
+the addition of the expression
+<s:code>
+ if(length(j) == 0)
+    return(NULL)
+</s:code>
+
+
+<para/>
+And we can deal with logical indexing in much the same way.
+Again, we just map the values in <s:arg>j</s:arg> to 
+the names of the variables of interest. So the method looks
+something like
+<s:code>
+function(x, i, j, ..., drop = TRUE)
+{ 
+  if(is.numeric(j) || is.logical(j))
+     j = names(x)[j]
+
+  dbGetQuery(x@dbConnection, paste("SELECT", paste(as.character(j), collapse = ", "), "FROM", x@table))
+}
+</s:code>
+
+</section>
+
+<section>
+<title>Selecting Rows</title>
+Indexing by record or row number or logical vector 
+can be done simply or more efficiently with a little thought.
+If we are given a logical vector, we can map this into
+row numbers via the S expression
+<s:code>j = 1:nrow(x)[j]</s:code>.
+So we need only focus on how to deal with integer indices.
+
+<para/>
+An obvious approach is to pull across all records in the 
+table and then subset this in R.
+This is, of course, inefficient and for very large datasets,
+prohibitive or infeasible.  It is these cases precisely 
+why we use a database to manage the data.
+So rather than do this, we need a more intelligent approach.
+
+<para/>
+The DBI package provides a way to retrieve the result set
+from an SQL  query in blocks via the <s:func package="DBI">fetch</s:func>
+function.
+The model is quite flexible. The result of an SQL query is a table
+or collection of tuples or records. We can ask for k of these
+and bring them into R as a k x p data frame. 
+We can then move onto the remainder asking for a different number.
+Essentially, we are moving the cursor in the result set to a new record.
+This allows us to do adaptive processing based on the contents
+of the records.  However, we can use it for a simpler purpose which is
+to  jump to the next record of interest by positioning the cursor
+on successive calls to the one we want.
+
+<para/>
+An example will hopefully illustrate howhis works is in our context.
+Suppose the user asks for records 2, 101 and 887.
+We would start by fetching the first two records and extracting the
+last of these.
+Then, we would ask for the next 99 records. Again, we would extract the 
+last of these, ignoring all of the others.
+And finally, we would ask for the next 887 - 99 records, and 
+again take only the last one.
+
+
+<para/>
+This is a relatively simple algorithm to code.
+The indices of interest are stored in <s:var>i</s:var>.
+To get things started, we  fetch up to the first 
+row of interest and extract the last record from that.
+Then we grow the data frame in which we will cumulate
+results to the proper dimension (number of rows)
+which corresponds to the number of elements being requested.
+
+<s:code>
+      d = fetch(rs, i[1])[i[1],  ]
+
+      n = length(i)
+      d = lapply(d, function(x) rep(x, n))
+
+      for(pos in seq(2, length(i))) {
+         # Now go and get the next row of interest, so we read from
+         # the next available row up to the index of interest.
+         tmp = fetch(rs, i[pos] - i[pos-1])
+
+          # stick the last row of our recently retrieved result.
+         d[pos, ] = tmp[nrow(tmp), ]
+      }
+</s:code>
+
+<para/>
+
+If the database interface provides facilities for us
+to explicitly position the cursor, we can be more efficient by
+explicitly moving to the next record of interest.
+
+<para/>
+
+
+<comment>See myDF.S in this directory. Merge into the code</comment>
+
+To get the ordering of the rows as required,  we
+must first retrieve the rows in order and then
+permute them as desired.
+j.prime = order(j)
+j = sort(j)
+# read rows via fetch()
+
+data[j.prime, ]
+
+Alternatively, when inserting the next row of interest
+that we read, we can look at the corresponding entry in j.prime
+and put the value directly into its approriate place in the
+result.
+
+<para/>
+Also, if there are duplicates in <s:var>i</s:var>, we have to be more 
+careful.   This might occur naturally when generating
+a random sample from the records such as when
+using resampling methods such as bootstrapping.
+
+
+<section>
+<title>
+</title>
+<para/>
+As we have mentioned, selecting rows by name does not
+typically make sense for a relational database model.
+A user might know that one of the variables in the table is
+to be considered as the identifier for the records.
+In that case, we would use an extension of the
+basic <s:class>RDBMSTable</s:class> class
+to add that information when it is constructed.
+For example, we would define a class
+<s:code>
+setClass("RDBMSTableWithRowNames",
+            representation("RDBMSTable", rowNameVariable = "character"))
+</s:code>
+A constructor function can then be written as 
+<s:code>
+<![CDATA[
+RDBMSTableWithRowNames =
+function(table, con, columnName, class = "RDBMSTableWithRowNames", virtual = FALSE)
+{
+  tb = RDBMSTable(table, con, class, virtual)
+  if(!virtual && is.na(match(name, names(table)))
+     stop("No such variable in the specified table", table)
+
+  tb@rowNameVariable = as.character(columnName)
+  tb
+}
+]]>
+</s:code>
+Now, subsetting by row name in S, such as
+<s:code>
+ tb[c("a", "d", "g", "z"), ]
+</s:code>
+would be implemented by send the SQL command
+<sql:cmd>
+  SELECT * FROM table WHERE
+         rowVarName IN ('a', 'd', 'g', 'z')
+</sql:cmd>
+The associated method would then be written something like
+<s:code>
+<![CDATA[
+function(x, i, j, ..., drop = TRUE)
+{
+  if(is.character(i) && length(i))
+     restriction = "WHERE", x@columnName, "IN (", paste("'", i, "'", sep = "", collapse = ", ")  ")" 
+  else
+     restriction = ""
+  cmd = paste("SELECT * FROM ", x@table, restriction)
+  dbGetQuery(x@dbConnection, cmd)
+}
+]]>
+</s:code>
+</section>
+
+</section>
+
+
+<section>
+<title>Subsetting and Restrictions</title>
+The material discussed above 
+describes a way to treat a relational database
+table as a virtual data frame in S.
+It presents what amounts to syntactic sugar for users
+so that they don't need to worry about SQL syntax
+and commands when working in R.  This is,
+in general, a good thing but not particularly important.
+A more interesting aspect is how to deal with
+mixing the computational modesl of
+R and the database server to produce a more
+powerful environment.
+
+<para/>
+Logical indexing is a very powerful construct
+in S.
+We often use condition expressions to
+subset records. For example, 
+<s:code>
+<![CDATA[
+ data[ data$bloodPressure2 > data$bloodPressure1  && data$gender == 'F', ] 
+]]>
+</s:code>
+returns all the records corresponding to
+female patients whose second blood pressure reading was higher
+than the first.
+The important thing to note here is that the condition
+being expressed refers to variables within
+the table itself.
+If we were to evaluate   this in S,
+we would first evaluate the condition expression
+to get a logical vector with as many elements as there are in
+the table.
+Then, we would use the subsetting methods described above
+to extract the rows corresponding to the <s:TRUE/> elements
+in that logical vector.
+The obvious approach  is to fetch
+the values of the relevant columns from the database into R
+and to do the logical comparisons there.
+If the dataset is very large (&gt; 2^31/4 = 536,870,912 on a 32-bit machine), 
+this is not feasible in R as there is a limit on the number of (indexable) elements in
+a vector.  For reasonable dataset sizes, this approach is still potentially very inefficient if the
+condition corresponds to a  small number of records.
+There is an SQL query to fetch each variable from the table in the condition,
+and then an additional SQL query to fetch the relevant records corresponding
+to <s:TRUE/> elements in our condition vector. 
+If we were to write this as a restriction in SQL, we would need only
+one SQL command. In our example above, we would write
+<sql:cmd>
+ SELECT * FROM data WHERE bloodPressure2 > bloodPressure1 AND gender = 'F'
+</sql:cmd>
+In this case, the database can use its optimized techniques to consider
+the entire query and do it as efficiently as possible. By breaking
+it into separate computations in R, we remove the possibility of
+taking advantages of these query planning optimizations.
+
+<para/>
+
+An even simpler example further illustrates the potential inefficiences.
+Suppose we want to get all the records corresponding to female patients.
+In R, we might use the expression
+<s:expression></s:expression>
+
+<para/>
+
+If we 
+Instead of transferring the values for the different attributes
+individual copulling data
+
+
+with conditions that
+relate to the variables in the database table
+in the remote server.
+At its simplest, we want the S user to 
+be able to specify numbers identifying the
+records/rows of interest and 
+
+
+
+
+Using a (so far) relatively simple mechanism,
+we can handle
+<s:code>
+<![CDATA[
+ table[ A > 100 && C < D, ]
+]]>
+</s:code>
+
+</section>
+</section>
+
+
+<section>
+<title>Future Work
+</title>
+<itemizedlist>
+<listitem>
+Caching of results, e.g. dimnames, etc.,
+or  computing then on construction of the object.
+If we had references or methods with mutable state,
+we would be able to update the internal state inline
+rather than requiring explicit assignment.
+</listitem>
+
+<listitem>
+Multiple tables, 
+e.g.
+<s:code><![CDATA[ tbl1[ x > tbl2$y, ]]]></s:code>
+
+Here  we would use the <s:op>$</s:op> operator
+to mean a reference to the variable y in the table
+tbl2.  It does not mean the values of this attribute/variable.
+</listitem>
+
+<listitem>
+Transforming attributes/variables in 
+the call.
+<s:code>
+  table[, c(log(A), B, C+D)]
+</s:code>
+</listitem>
+
+<listitem>
+<s:code>table[ X > mean(x),]</s:code>
+maps to 
+<sql:cmd>SELECT * FROM table WHERE X > AVERAGE(X) </sql:cmd>
+</listitem>
+
+<listitem>
+ table[X > median(X), ]
+deferring the median to the database or
+computing it locally. Perhaps we would use streaming algorithms
+since we know that X is in the database
+</listitem>
+
+<listitem>
+ subsetting by logical value.
+</listitem>
+<listitem>
+ subsetting by exclusion, e.g table[-c(1:10),]
+</listitem>
+
+
+<listitem>
+Use the meta-data  to find out if a table has a counter
+variable and if so, use that for selecting rows 
+by integer index.
+<br/>
+Add this to the validation and potentially allow
+it to be turned off.
+</listitem>
+
+
+<listitem>
+A quoting or subtitute method for accessing variables
+in S that are aliased by the table.
+</listitem>
+
+<listitem>
+Attach a table to the search path as an ObjectTable
+with names so that the variables are actually within R
+and obey the scoping  rules of R.
+</listitem>
+
+<listitem>
+Compiled access from the schema. i.e. take a schema
+and generate C code to access the values to avoid
+any interpreted overhead.
+</listitem>
+
+<listitem>
+</listitem>
+
+</itemizedlist>
+
+
+</section>
+
+
+<section>
+<title>Summary</title>
+
+Graduate to sending R code to the database and
+executing commands there. 
+This is something we have originated and experimented with
+while developing the REmbeddedPostgres package
+and Joe Conway has subsequently  pushed further with
+PL/R.
+</section>
+
+</article>

@@ -1,0 +1,14 @@
+Package: S4DBMSInterface
+Version: 0.1-0
+Date: 2005-4-12
+Title: Interface to Relational databases and tables
+Author: Duncan Temple Lang
+#Depends: DBI, RMySQL
+SaveImage: yes
+Maintainer: Duncan Temple Lang <duncan@wald.ucdavis.edu>
+Description:  This is a very experimental package that provides an S-style interface to relational database tables.  It allows one to treat a remote table like a data frame and to do subsetting, etc. in the usual way, transparently accessing the database and information via SQL commands.
+License: BSD
+URL: http://www.omegahat.org/S4DBMSInterface
+
+
+
