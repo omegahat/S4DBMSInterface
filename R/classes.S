@@ -108,7 +108,8 @@ setMethod("nrow", "RDBMSTable",
 
 setMethod("ncol", "RDBMSTable", 
              function(x) {
-               nrow(dbGetQuery(x@dbConnection, paste("DESCRIBE", x@table)))
+               length(dbListFields(x@dbConnection, x@table))
+#               nrow(dbGetQuery(x@dbConnection, paste("DESCRIBE", x@table)))
           })
 
 
@@ -121,7 +122,8 @@ setMethod("dim", "RDBMSTable",
 
 setMethod("names", "RDBMSTable", 
           function(x) {
-             dbGetQuery(x@dbConnection, paste("DESCRIBE", x@table))[,1]
+            dbListFields(x@dbConnection, x@table)
+ #            dbGetQuery(x@dbConnection, paste("DESCRIBE", x@table))[,1]
           })
 
 
@@ -431,3 +433,12 @@ setMethod("update",
 
                object
             })
+
+setMethod("$", "RDBMSTable",
+           function(x, name)
+              x[[name]])
+
+
+setMethod("[[", c("RDBMSTable", "character"),
+           function(x, i, j, ...)
+              dbGetQuery(x@dbConnection, sprintf("SELECT %s FROM %s;", i, x@table)))
